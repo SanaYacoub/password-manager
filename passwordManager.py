@@ -1,13 +1,17 @@
 from cryptography.fernet import Fernet, InvalidToken
 import os
+import sqlite3
 
 class passwordManager:
     
     def __init__(self):
         self.key = None
-        self.password_file = None
-        self.password_dict = {}
+        self.db_path = None
     
+    def _check_key(self):
+        if self.key is None:
+            raise ValueError("Encryption key not loaded")
+        
     # key used for encryption and decryption
     def create_key(self, path):
         self.key = Fernet.generate_key()
@@ -21,63 +25,133 @@ class passwordManager:
         with open(path, 'rb') as f:
             self.key = f.read()
     
-    def create_password_file(self, path, initial_values=None):
+    def create_database(self, path):
         if os.path.exists(path):
-            raise FileExistsError(f"Password file already exists: {path}")
-        self.password_file = path
+            raise FileExistsError(f"Database already exists: {path}")
 
-        if initial_values is not None:
-            for key, value in initial_values.items():
-                self.add_password(key, value)
-             
-    def load_password_file(self, path):
-        self.password_file = path
-
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"Password file not found: {path}")
-
-        has_decryption_error = False
+        self.db_path = path
 
         try:
-            with open(path, 'r') as f:
-                for line in f:
-                    if ":" not in line:
-                        continue  
+            conn = sqlite3.connect(path)
+            cursor = conn.cursor()
 
-                    site, encrypted = line.split(":", 1)
+            cursor.execute("""
+            CREATE TABLE passwords (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                site TEXT NOT NULL,
+                password TEXT NOT NULL
+            )
+            """)
 
-                    try:
-                        decrypted = Fernet(self.key).decrypt(encrypted.encode()).decode()
-                        self.password_dict[site] = decrypted
-
-                    except InvalidToken:
-                        # clé incorrecte ou fichier chiffré avec autre clé
-                        has_decryption_error = True
-                        raise ValueError(
-                            "Invalid key provided: unable to decrypt password file. "
-                            "The key does not match this file."
-                        )
-
-                    except Exception:
-                        print(f"[WARNING] Corrupted entry for {site}, skipping")
-
-            if has_decryption_error:
-                self.password_dict.clear()
+            conn.commit()
+            conn.close()
 
         except Exception as e:
-            raise RuntimeError(f"Failed to load password file: {e}")
+            raise RuntimeError(f"Failed to create database: {e}")
+             
+    def load_database(self, path):
+        self._check_key()
+        self.db_path = path
+
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Database not found: {path}")
+
+
+        try:
+            conn = sqlite3.connect(path)
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT site, password FROM passwords")
+
+            for site, encrypted in cursor.fetchall():
+                try:
+                    Fernet(self.key).decrypt(encrypted.encode())
+                
+                # clé incorrecte ou fichier chiffré avec autre clé
+                except InvalidToken:
+                    has_decryption_error = True
+                    raise ValueError(
+                        "Invalid key provided: unable to decrypt database. "
+                        "The key does not match this database."
+                    )
+
+                except Exception:
+                    print(f"[WARNING] Corrupted entry for {site}, skipping")
+
+            conn.close()
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to load database: {e}")
 
     def add_password(self, site, password):
-        self.password_dict[site] = password
+        self._check_key()
 
-        if self.password_file is not None:
-            with open(self.password_file, 'a+') as f:
-                encrypted = Fernet(self.key).encrypt(password.encode())
-                f.write(site + ":" + encrypted.decode() + "\n")
+        if self.db_path is not None:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+
+                encrypted = Fernet(self.key).encrypt(password.encode()).decode()
+
+                cursor.execute(
+                    "INSERT INTO passwords (site, password) VALUES (?, ?)",
+                    (site, encrypted)
+                )
+
+                conn.commit()
+                conn.close()
+
+            except Exception as e:
+                print(f"[ERROR] Failed to save password: {e}")
     
     def get_password(self, site):
-        if site not in self.password_dict:
-            raise KeyError(f"No password found for site: {site}")
-        return self.password_dict[site]
+        self._check_key()
+        
+        if self.db_path is None:
+            raise RuntimeError("No database loaded")
+        
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT password FROM passwords WHERE site = ?", (site,))
+            result = cursor.fetchone()
+
+            conn.close()
+
+            if not result:
+                raise KeyError(f"No password found for site: {site}")
+
+            return Fernet(self.key).decrypt(result[0].encode()).decode()
+
+        except Exception as e:
+            raise RuntimeError(f"Error retrieving password: {e}")
     
+    def show_all_passwords(self):
+        self._check_key()
+
+        if self.db_path is None:
+            raise RuntimeError("No database loaded")
+
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT id, site, password FROM passwords")
+            rows = cursor.fetchall()
+
+            conn.close()
+
+            if not rows:
+                print("[INFO] Database is empty")
+                return
+
+            print("\n--- PASSWORDS IN DATABASE ---")
+            for row in rows:
+                decrypted = Fernet(self.key).decrypt(row[2].encode()).decode()
+                print(f"ID: {row[0]} | Site: {row[1]} | Password: {decrypted}")
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to read database: {e}")
+        
 
