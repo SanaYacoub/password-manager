@@ -1,6 +1,7 @@
 from cryptography.fernet import Fernet, InvalidToken
 import os
 import sqlite3
+from contextlib import contextmanager
 
 class passwordManager:
     
@@ -11,6 +12,19 @@ class passwordManager:
     def _check_key(self):
         if self.key is None:
             raise ValueError("Encryption key not loaded")
+        
+    @contextmanager
+    def _get_connection(self):
+        if self.db_path is None:
+            raise RuntimeError("No database loaded")
+        
+        self._check_key()
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            yield conn
+        finally:
+            conn.close()
         
     # key used for encryption and decryption
     def create_key(self, path):
@@ -32,19 +46,18 @@ class passwordManager:
         self.db_path = path
 
         try:
-            conn = sqlite3.connect(path)
-            cursor = conn.cursor()
+            with sqlite3.connect(path) as conn:
+                cursor = conn.cursor()
 
-            cursor.execute("""
-            CREATE TABLE passwords (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                site TEXT NOT NULL,
-                password TEXT NOT NULL
-            )
-            """)
+                cursor.execute("""
+                CREATE TABLE passwords (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    site TEXT NOT NULL,
+                    password TEXT NOT NULL
+                )
+                """)
 
-            conn.commit()
-            conn.close()
+                conn.commit()
 
         except Exception as e:
             raise RuntimeError(f"Failed to create database: {e}")
@@ -58,27 +71,26 @@ class passwordManager:
 
 
         try:
-            conn = sqlite3.connect(path)
-            cursor = conn.cursor()
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
 
-            cursor.execute("SELECT site, password FROM passwords")
 
-            for site, encrypted in cursor.fetchall():
-                try:
-                    Fernet(self.key).decrypt(encrypted.encode())
-                
-                # clé incorrecte ou fichier chiffré avec autre clé
-                except InvalidToken:
-                    has_decryption_error = True
-                    raise ValueError(
-                        "Invalid key provided: unable to decrypt database. "
-                        "The key does not match this database."
-                    )
+                cursor.execute("SELECT site, password FROM passwords")
 
-                except Exception:
-                    print(f"[WARNING] Corrupted entry for {site}, skipping")
+                for site, encrypted in cursor.fetchall():
+                    try:
+                        Fernet(self.key).decrypt(encrypted.encode())
+                    
+                    # clé incorrecte ou fichier chiffré avec autre clé
+                    except InvalidToken:
+                        raise ValueError(
+                            "Invalid key provided: unable to decrypt database. "
+                            "The key does not match this database."
+                        )
 
-            conn.close()
+                    except Exception:
+                        print(f"[WARNING] Corrupted entry for {site}, skipping")
+
 
         except Exception as e:
             raise RuntimeError(f"Failed to load database: {e}")
@@ -86,12 +98,11 @@ class passwordManager:
     def add_password(self, site, password):
         self._check_key()
 
-        if self.db_path is not None:
-            try:
-                conn = sqlite3.connect(self.db_path)
+        try:
+            encrypted = Fernet(self.key).encrypt(password.encode()).decode()
+                
+            with self._get_connection() as conn:
                 cursor = conn.cursor()
-
-                encrypted = Fernet(self.key).encrypt(password.encode()).decode()
 
                 cursor.execute(
                     "INSERT INTO passwords (site, password) VALUES (?, ?)",
@@ -99,30 +110,24 @@ class passwordManager:
                 )
 
                 conn.commit()
-                conn.close()
 
-            except Exception as e:
-                print(f"[ERROR] Failed to save password: {e}")
+        except Exception as e:
+            print(f"[ERROR] Failed to save password: {e}")
     
     def get_password(self, site):
         self._check_key()
         
-        if self.db_path is None:
-            raise RuntimeError("No database loaded")
-        
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
 
-            cursor.execute("SELECT password FROM passwords WHERE site = ?", (site,))
-            result = cursor.fetchone()
+                cursor.execute("SELECT password FROM passwords WHERE site = ?", (site,))
+                result = cursor.fetchone()
 
-            conn.close()
+                if not result:
+                    raise KeyError(f"No password found for site: {site}")
 
-            if not result:
-                raise KeyError(f"No password found for site: {site}")
-
-            return Fernet(self.key).decrypt(result[0].encode()).decode()
+                return Fernet(self.key).decrypt(result[0].encode()).decode()
 
         except Exception as e:
             raise RuntimeError(f"Error retrieving password: {e}")
@@ -130,17 +135,13 @@ class passwordManager:
     def show_all_passwords(self):
         self._check_key()
 
-        if self.db_path is None:
-            raise RuntimeError("No database loaded")
-
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
 
-            cursor.execute("SELECT id, site, password FROM passwords")
-            rows = cursor.fetchall()
+                cursor.execute("SELECT id, site, password FROM passwords")
+                rows = cursor.fetchall()
 
-            conn.close()
 
             if not rows:
                 print("[INFO] Database is empty")
