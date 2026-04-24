@@ -17,8 +17,6 @@ class passwordManager:
     def _get_connection(self):
         if self.db_path is None:
             raise RuntimeError("No database loaded")
-        
-        self._check_key()
 
         conn = sqlite3.connect(self.db_path)
         try:
@@ -46,7 +44,7 @@ class passwordManager:
         self.db_path = path
 
         try:
-            with sqlite3.connect(path) as conn:
+            with self._get_connection() as conn:
                 cursor = conn.cursor()
 
                 cursor.execute("""
@@ -131,6 +129,44 @@ class passwordManager:
 
         except Exception as e:
             raise RuntimeError(f"Error retrieving password: {e}")
+    
+    def delete_password(self, site):
+        self._check_key()
+
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+
+                cursor.execute("DELETE FROM passwords WHERE site = ?", (site,))
+                conn.commit()
+
+                if cursor.rowcount == 0:
+                    raise KeyError(f"No password found for site: {site}")
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to delete password: {e}")
+    
+    def update_password(self, site, new_password):
+        self._check_key()
+
+        try:
+            encrypted = Fernet(self.key).encrypt(new_password.encode()).decode()
+
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+
+                cursor.execute(
+                    "UPDATE passwords SET password = ? WHERE site = ?",
+                    (encrypted, site)
+                )
+
+                conn.commit()
+
+                if cursor.rowcount == 0:
+                    raise KeyError(f"No password found for site: {site}")
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to update password: {e}")
     
     def show_all_passwords(self):
         self._check_key()
