@@ -4,8 +4,8 @@ def main():
     pm= passwordManager()
 
     print("""What do you want to do ?
-        (1) Create a new key
-        (2) Load an existing key
+        (1) Set master password
+        (2) Load master password
         (3) Create new database
         (4) Load existing database
         (5) Add a new password
@@ -20,15 +20,14 @@ def main():
     while not done:
         try:
             choice = input("Enter your choice: ")
-
             if choice == "1":
-                path = input("Enter the key file path: ")
-                pm.create_key(path)
+                master_pwd = input("Enter new master password: ")
+                pm.create_master_password(master_pwd)
             elif choice == "2":
-                path = input("Enter the key file path: ")
-                pm.load_key(path)
+                master_pwd = input("Enter master password: ")
+                pm.load_master_password(master_pwd)
             elif choice == "3":
-                path = input("Enter the database path: ")
+                path = input("Enter the new database path: ")
                 pm.create_database(path)
             elif choice == "4":
                 path = input("Enter the database path: ")
